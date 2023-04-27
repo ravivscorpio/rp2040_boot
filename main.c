@@ -3,7 +3,6 @@
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
-
 #include <stdio.h>
 #include <string.h>
 
@@ -35,9 +34,9 @@
 #define BOOTLOADER_ENTRY_PIN 15
 #define BOOTLOADER_ENTRY_MAGIC 0xb105f00d
 
-#define UART_TX_PIN 8
-#define UART_RX_PIN 9
-#define UART_BAUD   115200
+#define UART_TX_PIN 0
+#define UART_RX_PIN 1
+#define UART_BAUD   921600
 
 #define CMD_SYNC   (('S' << 0) | ('Y' << 8) | ('N' << 16) | ('C' << 24))
 #define CMD_READ   (('R' << 0) | ('E' << 8) | ('A' << 16) | ('D' << 24))
@@ -59,15 +58,6 @@
 #define WRITE_ADDR_MIN (XIP_BASE + IMAGE_HEADER_OFFSET + FLASH_SECTOR_SIZE)
 #define ERASE_ADDR_MIN (XIP_BASE + IMAGE_HEADER_OFFSET)
 #define FLASH_ADDR_MAX (XIP_BASE + PICO_FLASH_SIZE_BYTES)
-
-#define TIMER2BOOT 5000
-uint8_t buff[10]="checked";
-bool stay_in_boot=true;
-bool is_synced=false;
-
-
-
-
 
 static void disable_interrupts(void)
 {
@@ -581,38 +571,32 @@ static enum state state_wait_for_sync(struct cmd_context *ctx)
 	int idx = 0;
 	uint8_t *recv = (uint8_t *)&ctx->opcode;
 	uint8_t *match = (uint8_t *)&ctx->status;
-	
+
 	ctx->status = CMD_SYNC;
 
 	gpio_put(PICO_DEFAULT_LED_PIN, 1);
-    if (!uart_is_readable_within_us	(uart1,TIMER2BOOT*1000 )){
-		stay_in_boot=false;
-		return STATE_WAIT_FOR_SYNC;
-	}
-	
+
 	while (idx < sizeof(ctx->opcode)) {
-		uart_read_blocking(uart1,&recv[idx], 1);
+		uart_read_blocking(uart0, &recv[idx], 1);
 		gpio_xor_mask((1 << PICO_DEFAULT_LED_PIN));
 
 		if (recv[idx] != match[idx]) {
 			// Start again
 			idx = 0;
-			
 		} else {
 			// Move on
 			idx++;
 		}
 	}
-    
+
 	assert(ctx->opcode == CMD_SYNC);
-	stay_in_boot=true;
-	
+
 	return STATE_READ_ARGS;
 }
 
 static enum state state_read_opcode(struct cmd_context *ctx)
 {
-	uart_read_blocking(uart1, (uint8_t *)&ctx->opcode, sizeof(ctx->opcode));
+	uart_read_blocking(uart0, (uint8_t *)&ctx->opcode, sizeof(ctx->opcode));
 
 	return STATE_READ_ARGS;
 }
@@ -632,7 +616,7 @@ static enum state state_read_args(struct cmd_context *ctx)
 	ctx->resp_args = ctx->args;
 	ctx->resp_data = (uint8_t *)(ctx->resp_args + desc->resp_nargs);
 
-	uart_read_blocking(uart1, (uint8_t *)ctx->args, sizeof(*ctx->args) * desc->nargs);
+	uart_read_blocking(uart0, (uint8_t *)ctx->args, sizeof(*ctx->args) * desc->nargs);
 
 	return STATE_READ_DATA;
 }
@@ -653,7 +637,7 @@ static enum state state_read_data(struct cmd_context *ctx)
 
 	// TODO: Check sizes
 
-	uart_read_blocking(uart1, (uint8_t *)ctx->data, ctx->data_len);
+	uart_read_blocking(uart0, (uint8_t *)ctx->data, ctx->data_len);
 
 	return STATE_HANDLE_DATA;
 }
@@ -674,7 +658,7 @@ static enum state state_handle_data(struct cmd_context *ctx)
 
 	size_t resp_len = sizeof(ctx->status) + (sizeof(*ctx->resp_args) * desc->resp_nargs) + ctx->resp_data_len;
 	memcpy(ctx->uart_buf, &ctx->status, sizeof(ctx->status));
-	uart_write_blocking(uart1, ctx->uart_buf, resp_len);
+	uart_write_blocking(uart0, ctx->uart_buf, resp_len);
 
 	return STATE_READ_OPCODE;
 }
@@ -683,40 +667,21 @@ static enum state state_error(struct cmd_context *ctx)
 {
 	size_t resp_len = sizeof(ctx->status);
 	memcpy(ctx->uart_buf, &ctx->status, sizeof(ctx->status));
-	uart_write_blocking(uart1, ctx->uart_buf, resp_len);
+	uart_write_blocking(uart0, ctx->uart_buf, resp_len);
 
 	return STATE_WAIT_FOR_SYNC;
 }
 
-//static bool should_stay_in_bootloader()
-static bool  should_stay_in_bootloader()
+static bool should_stay_in_bootloader()
 {
-	//bool wd_says_so = (watchdog_hw->scratch[5] == BOOTLOADER_ENTRY_MAGIC) &&
-	//	(watchdog_hw->scratch[6] == ~BOOTLOADER_ENTRY_MAGIC);
-	//stay_in_boot=false;
-	//return !gpio_get(BOOTLOADER_ENTRY_PIN) || wd_says_so;
-	//if  (is_synced)
-		//stay_in_boot=true;
+	bool wd_says_so = (watchdog_hw->scratch[5] == BOOTLOADER_ENTRY_MAGIC) &&
+		(watchdog_hw->scratch[6] == ~BOOTLOADER_ENTRY_MAGIC);
 
-
-	return stay_in_boot;
+	return !gpio_get(BOOTLOADER_ENTRY_PIN) || wd_says_so;
 }
-int64_t  alarm_callback()
-{	
-	stay_in_boot=false;
-	should_stay_in_bootloader();
-	return 0;
-}
-
-
-
 
 int main(void)
 {
-
-	
-	
-    
 	gpio_init(PICO_DEFAULT_LED_PIN);
 	gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 	gpio_put(PICO_DEFAULT_LED_PIN, 1);
@@ -725,36 +690,30 @@ int main(void)
 	gpio_pull_up(BOOTLOADER_ENTRY_PIN);
 	gpio_set_dir(BOOTLOADER_ENTRY_PIN, 0);
 
-	
+	sleep_ms(10);
 
 	struct image_header *hdr = (struct image_header *)(XIP_BASE + IMAGE_HEADER_OFFSET);
 
-
+	if (!should_stay_in_bootloader() && image_header_ok(hdr)) {
+		uint32_t vtor = *((uint32_t *)(XIP_BASE + IMAGE_HEADER_OFFSET));
+		disable_interrupts();
+		reset_peripherals();
+		jump_to_vtor(vtor);
+	}
 
 	DBG_PRINTF_INIT();
 
-	uart_init(uart1, UART_BAUD);
+	uart_init(uart0, UART_BAUD);
 	gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
 	gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-	uart_set_hw_flow(uart1, false, false);
+	uart_set_hw_flow(uart0, false, false);
 
-
-    //add_alarm_in_ms(TIMER2BOOT, alarm_callback, NULL, false);
 	struct cmd_context ctx;
 	uint8_t uart_buf[(sizeof(uint32_t) * (1 + MAX_NARG)) + MAX_DATA_LEN];
 	ctx.uart_buf = uart_buf;
 	enum state state = STATE_WAIT_FOR_SYNC;
 
 	while (1) {
-		
-		if (!should_stay_in_bootloader() && image_header_ok(hdr)) {
-		//if (!stay_in_boot && image_header_ok(hdr)) {
-			uint32_t vtor = *((uint32_t *)(XIP_BASE + IMAGE_HEADER_OFFSET));
-			disable_interrupts();
-			reset_peripherals();
-			jump_to_vtor(vtor);
-		}
-		
 		switch (state) {
 		case STATE_WAIT_FOR_SYNC:
 			DBG_PRINTF("wait_for_sync\n");
