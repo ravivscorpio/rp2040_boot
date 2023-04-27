@@ -1,0 +1,3 @@
+C:/Users/raviv/Documents/projects/pico-examples/rp2040-serial-bootloader-main/build/pioasm/CMakeFiles/pioasm.dir
+C:/Users/raviv/Documents/projects/pico-examples/rp2040-serial-bootloader-main/build/pioasm/CMakeFiles/edit_cache.dir
+C:/Users/raviv/Documents/projects/pico-examples/rp2040-serial-bootloader-main/build/pioasm/CMakeFiles/rebuild_cache.dir
